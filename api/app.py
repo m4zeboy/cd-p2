@@ -100,6 +100,12 @@ def notify(notify_data: NotifyIn, db: Connection = Depends(get_db)):
             )
             db.commit()
             print("Sync OK.")
+
+            consume_request = requests.patch(
+                f"http://localhost:4000/event/consume/{notify_data.event_consumer_id}"
+            )
+
+            print(consume_request.status_code)
     except HTTPException:
         raise
     except Exception as e:

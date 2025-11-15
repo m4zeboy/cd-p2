@@ -6,6 +6,7 @@ from database import get_db, start_database
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException
+from starlette.status import HTTP_404_NOT_FOUND, HTTP_500_INTERNAL_SERVER_ERROR
 
 api = FastAPI()
 
@@ -87,6 +88,7 @@ def publish_event(
                 event_data.delta,
             ),
         ).lastrowid
+        db.commit()
 
         subscribers = cursor.execute("SELECT id, branch_url FROM subscriber").fetchall()
         for row in subscribers:
@@ -95,6 +97,7 @@ def publish_event(
                 "INSERT INTO event_consumer (event_id, subscriber_id) VALUES (?, ?)",
                 (event_id, row["id"]),
             ).lastrowid
+            db.commit()
 
             result = requests.post(
                 f"{branch_url}/notify",
@@ -110,12 +113,38 @@ def publish_event(
             )
             print(f"notify result: {result.status_code} {result.json()}")
 
-        db.commit()
     except HTTPException:
         raise
     except Exception as e:
         print(str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@api.patch("/event/consume/{id}")
+def consume_event(id: int, db: Connection = Depends(get_db)):
+    cursor = db.cursor()
+
+    try:
+        instance = cursor.execute(
+            "SELECT id FROM event_consumer WHERE id = ?",
+            (id,),
+        ).fetchone()
+
+        print(id, instance)
+
+        if instance is None:
+            raise HTTPException(status_code=HTTP_404_NOT_FOUND)
+        cursor.execute(
+            "UPDATE event_consumer SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (id,),
+        )
+        db.commit()
+
+        print(f"Event instace {id} consumed.")
+    except HTTPException:
+        raise
+    except Exception:
+        HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 uvicorn.run(api, host="0.0.0.0", port=4000)
