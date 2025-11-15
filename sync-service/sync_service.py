@@ -1,11 +1,11 @@
 from sqlite3 import Connection, IntegrityError
 
+import requests
 import uvicorn
 from database import get_db, start_database
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException
-from starlette.status import HTTP_204_NO_CONTENT
 
 api = FastAPI()
 
@@ -26,16 +26,14 @@ def subscribe(
         cursor = db.cursor()
 
         subscriber = cursor.execute(
-            "SELECT id FROM subscriber WHERE branch_id = ?",
-            (subscribe_data.branch_id,),
+            "SELECT id FROM subscriber WHERE id = ? OR branch_url = ?",
+            (subscribe_data.branch_id, subscribe_data.branch_url),
         ).fetchone()
 
         if subscriber is not None:
-            raise HTTPException(
-                status_code=HTTP_204_NO_CONTENT,
-            )
+            return
         cursor.execute(
-            "INSERT INTO subscriber (branch_id, branch_url) VALUES (?, ?)",
+            "INSERT INTO subscriber (id, branch_url) VALUES (?, ?)",
             (subscribe_data.branch_id, subscribe_data.branch_url),
         )
 
@@ -44,6 +42,8 @@ def subscribe(
         return {"message": f"{subscribe_data.branch_url} subscribed"}
     except IntegrityError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         print(str(e))
         raise HTTPException(status_code=500, detail=str(e))
@@ -63,23 +63,21 @@ def publish_event(
     event_data: EventIn,
     db: Connection = Depends(get_db),
 ):
-    print(event_data.branch_id)
     try:
         cursor = db.cursor()
 
         cursor.execute(
-            "SELECT id FROM subscriber WHERE branch_id = ?",
+            "SELECT id FROM subscriber WHERE id = ?",
             (event_data.branch_id,),
         )
         result = cursor.fetchone()
-        print(result)
 
         if result is None:
             raise HTTPException(status_code=404, detail="Publisher not found.")
 
         publisher_id = result[0]
-        cursor.execute(
-            "INSERT INTO event (publisher_id, operation, sub, initial_balance, current_balance, delta) VALUES (?, ?, ?, ?, ?, ?)",
+        event_id = cursor.execute(
+            "INSERT INTO event (publisher, operation, sub, initial_balance, current_balance, delta) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 publisher_id,
                 event_data.operation,
@@ -88,9 +86,33 @@ def publish_event(
                 event_data.current_balance,
                 event_data.delta,
             ),
-        )
+        ).lastrowid
+
+        subscribers = cursor.execute("SELECT id, branch_url FROM subscriber").fetchall()
+        for row in subscribers:
+            branch_url = row["branch_url"]
+            event_consumer_id = cursor.execute(
+                "INSERT INTO event_consumer (event_id, subscriber_id) VALUES (?, ?)",
+                (event_id, row["id"]),
+            ).lastrowid
+
+            result = requests.post(
+                f"{branch_url}/notify",
+                json={
+                    "event_consumer_id": event_consumer_id,
+                    "publisher_branch_id": publisher_id,
+                    "operation": event_data.operation,
+                    "sub": event_data.sub,
+                    "initial_balance": event_data.initial_balance,
+                    "current_balance": event_data.current_balance,
+                    "delta": event_data.delta,
+                },
+            )
+            print(f"notify result: {result.status_code} {result.json()}")
 
         db.commit()
+    except HTTPException:
+        raise
     except Exception as e:
         print(str(e))
         raise HTTPException(status_code=500, detail=str(e))
