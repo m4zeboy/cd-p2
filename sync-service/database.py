@@ -24,24 +24,16 @@ def start_database():
     conn.execute("""
         CREATE TABLE IF NOT EXISTS event (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            publisher TEXT,
+            publisher_id TEXT,
+            subscriber_id TEXT,
             published_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            consumed_at TEXT NULL,
             operation TEXT,
             sub INTEGER,
             initial_balance INTEGER,
             current_balance INTEGER,
             delta INTEGER,
-            FOREIGN KEY (publisher) REFERENCES publisher(id)
-        )
-        """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS event_consumer (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            subscriber_id TEXT,
-            event_id INTEGER NOT NULL,
-            received_at  TEXT DEFAULT CURRENT_TIMESTAMP,
-            consumed_at TEXT NULLABLE,
-            FOREIGN KEY (event_id) REFERENCES event(id)
+            FOREIGN KEY (publisher_id) REFERENCES subscriber(id),
             FOREIGN KEY (subscriber_id) REFERENCES subscriber(id)
         )
         """)

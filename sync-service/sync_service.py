@@ -77,32 +77,28 @@ def publish_event(
             raise HTTPException(status_code=404, detail="Publisher not found.")
 
         publisher_id = result[0]
-        event_id = cursor.execute(
-            "INSERT INTO event (publisher, operation, sub, initial_balance, current_balance, delta) VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                publisher_id,
-                event_data.operation,
-                event_data.sub,
-                event_data.initial_balance,
-                event_data.current_balance,
-                event_data.delta,
-            ),
-        ).lastrowid
-        db.commit()
 
         subscribers = cursor.execute("SELECT id, branch_url FROM subscriber").fetchall()
         for row in subscribers:
             branch_url = row["branch_url"]
-            event_consumer_id = cursor.execute(
-                "INSERT INTO event_consumer (event_id, subscriber_id) VALUES (?, ?)",
-                (event_id, row["id"]),
+            event_id = cursor.execute(
+                "INSERT INTO event (publisher_id, subscriber_id, operation, sub, initial_balance, current_balance, delta) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    publisher_id,
+                    row["id"],
+                    event_data.operation,
+                    event_data.sub,
+                    event_data.initial_balance,
+                    event_data.current_balance,
+                    event_data.delta,
+                ),
             ).lastrowid
             db.commit()
 
             result = requests.post(
                 f"{branch_url}/notify",
                 json={
-                    "event_consumer_id": event_consumer_id,
+                    "event_consumer_id": event_id,
                     "publisher_branch_id": publisher_id,
                     "operation": event_data.operation,
                     "sub": event_data.sub,
@@ -126,7 +122,7 @@ def consume_event(id: int, db: Connection = Depends(get_db)):
 
     try:
         instance = cursor.execute(
-            "SELECT id FROM event_consumer WHERE id = ?",
+            "SELECT id FROM event WHERE id = ?",
             (id,),
         ).fetchone()
 
@@ -135,7 +131,7 @@ def consume_event(id: int, db: Connection = Depends(get_db)):
         if instance is None:
             raise HTTPException(status_code=HTTP_404_NOT_FOUND)
         cursor.execute(
-            "UPDATE event_consumer SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?",
+            "UPDATE event SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?",
             (id,),
         )
         db.commit()
@@ -145,6 +141,16 @@ def consume_event(id: int, db: Connection = Depends(get_db)):
         raise
     except Exception:
         HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api.get("/event/non-consumed/{branch_id}")
+def get_events_not_consumed(branch_id, db: Connection = Depends(get_db)):
+    cursor = db.cursor()
+    result = cursor.execute(
+        "SELECT * FROM event WHERE subscriber_id = ? AND consumed_at IS NULL",
+        (branch_id,),
+    ).fetchall()
+    return result
 
 
 uvicorn.run(api, host="0.0.0.0", port=4000)

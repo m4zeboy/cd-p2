@@ -11,9 +11,10 @@ from starlette.exceptions import HTTPException
 from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR
 
 api = FastAPI()
-BRANCH_ID = "bb5942cb28ff48f3420f0c13e9187746"
-PORT = 4444
+BRANCH_ID = "771e59d2742c37ca4e28b6b1b64ee061"
+PORT = 5555
 BASE_URL = f"http://localhost:{PORT}"
+
 start_database()
 
 
@@ -34,7 +35,6 @@ def subscribe_sync():
         non_consumed_events.status_code,
         non_consumed_events_data,
     )
-
     conn = sqlite3.connect("product_database.db")
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -54,7 +54,6 @@ def subscribe_sync():
             ),
             BRANCH_ID=BRANCH_ID,
         )
-
     conn.close()
 
 
