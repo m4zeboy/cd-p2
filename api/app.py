@@ -26,7 +26,7 @@ from event_handler import consume_create
 from fastapi import Depends, FastAPI
 from models import NotifyIn, ProductIn
 from starlette.exceptions import HTTPException
-from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR
+from starlette.status import HTTP_404_NOT_FOUND, HTTP_500_INTERNAL_SERVER_ERROR
 
 api = FastAPI()
 BRANCH_ID = "bb5942cb28ff48f3420f0c13e9187746"
@@ -63,6 +63,9 @@ def subscribe_sync():
     cursor = conn.cursor()
 
     for event in non_consumed_events_data:
+        if event["publisher_id"] == BRANCH_ID:
+            print("Ignore event from own branch")
+            continue
         if event["operation"] == "CREATE":
             consume_create(
                 db=conn,
@@ -150,6 +153,17 @@ def notify(notify_data: NotifyIn, db: Connection = Depends(get_db)):
             status_code=HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal server error: {str(e)}",
         )
+
+
+@api.get("/product/{id}")
+def select_product_by_id(id: int, db: Connection = Depends(get_db)):
+    cursor = db.cursor()
+
+    product = cursor.execute("SELECT * FROM product WHERE id = ?", (id,)).fetchone()
+
+    if product is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Product not found.")
+    return product
 
 
 uvicorn.run(api, host="0.0.0.0", port=PORT)
