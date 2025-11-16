@@ -7,16 +7,21 @@
 # Computaçao Distribuída,
 # Novembro de 2025
 # ===================================================
-import sqlite3
+
 from sqlite3 import Connection, IntegrityError
 
 import requests
 import uvicorn
 from database import get_db, start_database
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Response
+from models import LockProductIn
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException
-from starlette.status import HTTP_404_NOT_FOUND, HTTP_500_INTERNAL_SERVER_ERROR
+from starlette.status import (
+    HTTP_201_CREATED,
+    HTTP_404_NOT_FOUND,
+    HTTP_500_INTERNAL_SERVER_ERROR,
+)
 
 api = FastAPI()
 
@@ -161,6 +166,42 @@ def get_events_not_consumed(branch_id, db: Connection = Depends(get_db)):
         (branch_id,),
     ).fetchall()
     return result
+
+
+@api.get("/lock")
+def get_product_lock(product_id: int = 0, db: Connection = Depends(get_db)):
+    cursor = db.cursor()
+    lock = cursor.execute(
+        "SELECT * FROM lock WHERE product_id = ? AND released_at IS NULL",
+        (product_id,),
+    ).fetchone()
+
+    print("lock: ", lock)
+    if lock is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND)
+
+    return lock
+
+
+@api.post("/lock")
+def lock_product(
+    response: Response,
+    product_lock_data: LockProductIn,
+    db: Connection = Depends(get_db),
+):
+    cursor = db.cursor()
+
+    lock_id = cursor.execute(
+        "INSERT INTO lock (branch, product_id) VALUES (?, ?)",
+        (
+            product_lock_data.branch,
+            product_lock_data.product_id,
+        ),
+    ).lastrowid
+    db.commit()
+
+    response.status_code = HTTP_201_CREATED
+    return {"lock_id": lock_id, "detail": "Product locked."}
 
 
 uvicorn.run(api, host="0.0.0.0", port=4000)
