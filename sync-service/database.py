@@ -46,5 +46,17 @@ def start_database():
             FOREIGN KEY (subscriber_id) REFERENCES subscriber(id)
         )
         """)
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lock (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            branch TEXT NOT NULL,
+            product_id INTEGER NOT NULL,
+            locked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            released_at TEXT
+        )
+        """
+    )
     conn.commit()
     conn.close()
