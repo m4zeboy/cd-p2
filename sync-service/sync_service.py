@@ -204,5 +204,23 @@ def lock_product(
     return {"lock_id": lock_id, "detail": "Product locked."}
 
 
+@api.patch("/lock/{lock_id}/release")
+def release_lock(lock_id: int, db: Connection = Depends(get_db)):
+    cursor = db.cursor()
+
+    lock = cursor.execute(
+        "SELECT * FROM lock WHERE id = ? AND released_at IS NULL", (lock_id,)
+    ).fetchone()
+
+    if lock is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Lock not found.")
+
+    cursor.execute(
+        "UPDATE lock SET released_at = CURRENT_TIMESTAMP WHERE id = ?", (lock_id,)
+    )
+    db.commit()
+    print(f"Lock {lock_id} released")
+
+
 uvicorn.run(api, host="0.0.0.0", port=4000)
 print("Sync service running on port 4000")

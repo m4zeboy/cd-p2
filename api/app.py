@@ -16,7 +16,7 @@
 #   [x] Process order
 #   [x] update product
 #   [x] confirm
-#   [ ] unlock
+#   [x] unlock
 #   [ ] publish update event to other branches
 #   [ ] Replicate to update event
 # [ ] Get Order
@@ -226,16 +226,32 @@ def place_order(place_order_data: PlaceOrderIn, db: Connection = Depends(get_db)
                 f"{SYNC_SERVICE_BASE_URL}/lock",
                 json={"branch": BRANCH_ID, "product_id": item.product_id},
             )
+
+            lock_product_response_data = lock_product_response.json()
             print(
                 "lock_product_response: ",
                 lock_product_response.status_code,
                 lock_product_response.json(),
             )
 
-            if item.quantity > current_balance:
+            if current_balance - item.quantity < 0:
                 status = "INSUFFICIENT_BALANCE"
-            else:
-                status = "IN_PROGRESS"
+                cursor.execute(
+                    "UPDATE product_request SET status = ? WHERE id = ? ",
+                    (status, product_request_id),
+                )
+                db.commit()
+
+                unlock_response = requests.patch(
+                    f"{SYNC_SERVICE_BASE_URL}/lock/{lock_product_response_data['lock_id']}/release"
+                )
+
+                print(
+                    f"unlock_response: {unlock_response.status_code}, {unlock_response.json()}"
+                )
+                continue
+
+            status = "IN_PROGRESS"
 
             cursor.execute(
                 "UPDATE product_request SET status = ? WHERE id = ? ",
@@ -260,6 +276,19 @@ def place_order(place_order_data: PlaceOrderIn, db: Connection = Depends(get_db)
             updates_to_publish[item.product_id] = -item.quantity
 
             print(f"updates to publish: {len(updates_to_publish)}")
+
+            unlock_response = requests.patch(
+                f"{SYNC_SERVICE_BASE_URL}/lock/{lock_product_response_data['lock_id']}/release"
+            )
+
+            print(
+                f"unlock_response: {unlock_response.status_code}, {unlock_response.json()}"
+            )
+
+        return {
+            "message": "Request created. Check the items' statuses",
+            "confirmed_items": len(updates_to_publish),
+        }
 
     except HTTPException:
         raise
