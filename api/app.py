@@ -1,3 +1,21 @@
+# ===================================================
+# Autor: Moisés Silva de Azevedo
+#
+# Universidade Federal do Mato Grosso do Sul,
+# Câmpus de Três Lagoas (UFMS/CPTL),
+# Sistemas de Informaçao,
+# Computaçao Distribuída,
+# Novembro de 2025
+# ===================================================
+# [x] Create Product
+# [x] Replicate
+# [x] Fail tolerance
+# [ ] Get Product
+# [ ] Place order
+# [ ] Concurrency
+# [ ] Get Order
+# [ ] Authentication
+#
 import sqlite3
 from sqlite3 import Connection, IntegrityError
 
@@ -17,6 +35,11 @@ BASE_URL = f"http://localhost:{PORT}"
 start_database()
 
 
+# ===================================================
+# Startup initialization:
+# 1. Subscribe on sync service
+# 2. Search for non-consumed events to apply updates
+# ===================================================
 @api.on_event("startup")
 def subscribe_sync():
     result = requests.post(
@@ -40,24 +63,31 @@ def subscribe_sync():
     cursor = conn.cursor()
 
     for event in non_consumed_events_data:
-        consume_create(
-            db=conn,
-            cursor=cursor,
-            notify_data=NotifyIn(
-                event_consumer_id=event["id"],
-                publisher_branch_id=event["publisher_id"],
-                operation=event["operation"],
-                sub=event["sub"],
-                initial_balance=event["initial_balance"],
-                current_balance=event["current_balance"],
-                delta=event["delta"],
-            ),
-            BRANCH_ID=BRANCH_ID,
-        )
+        if event["operation"] == "CREATE":
+            consume_create(
+                db=conn,
+                cursor=cursor,
+                notify_data=NotifyIn(
+                    event_consumer_id=event["id"],
+                    publisher_branch_id=event["publisher_id"],
+                    operation=event["operation"],
+                    sub=event["sub"],
+                    initial_balance=event["initial_balance"],
+                    current_balance=event["current_balance"],
+                    delta=event["delta"],
+                ),
+                BRANCH_ID=BRANCH_ID,
+            )
 
     conn.close()
 
 
+# ===================================================
+# Create product:
+# 1. Create product locally
+# 2. Publish event: operation=CREATE
+# The sync service will handle the distribution of the event
+# ===================================================
 @api.post("/product")
 def create_product(
     product_data: ProductIn,
@@ -86,7 +116,7 @@ def create_product(
             "http://localhost:4000/event/publish",
             json=event_data,
         )
-        print("Subscription result: ", result.status_code)
+        print("Publish result: ", result.status_code)
 
         return {"message": f"{product_data.id} create"}
     except IntegrityError as e:
@@ -95,6 +125,13 @@ def create_product(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ===================================================
+# Listen notifications from sync service:
+# 1. When an event occur, the sync service will call this route
+# for every listener subscribed in the event
+# 2. Handle appropriately based on event operation
+# 3. Call the consume route to mark the event as consumed
+# ===================================================
 @api.post("/notify")
 def notify(notify_data: NotifyIn, db: Connection = Depends(get_db)):
     if notify_data.publisher_branch_id == BRANCH_ID:
