@@ -7,7 +7,7 @@
 # Computaçao Distribuída,
 # Novembro de 2025
 # ===================================================
-import sqlite3
+from typing import List
 
 from pydantic import BaseModel
 
@@ -25,3 +25,12 @@ class NotifyIn(BaseModel):
     initial_balance: int
     current_balance: int
     delta: int
+
+
+class OrderItem(BaseModel):
+    product_id: int
+    quantity: int
+
+
+class PlaceOrderIn(BaseModel):
+    items: List[OrderItem]
