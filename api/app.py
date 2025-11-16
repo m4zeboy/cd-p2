@@ -10,9 +10,10 @@
 # [x] Create Product
 # [x] Replicate
 # [x] Fail tolerance
-# [ ] Get Product
+# [x] Get Product
 # [ ] Place order
-# [ ] Concurrency
+#   [ ] Concurrency
+#   [ ] Replicate to update event
 # [ ] Get Order
 # [ ] Authentication
 #
@@ -24,7 +25,7 @@ import uvicorn
 from database import get_db, start_database
 from event_handler import consume_create
 from fastapi import Depends, FastAPI
-from models import NotifyIn, ProductIn
+from models import NotifyIn, PlaceOrderIn, ProductIn
 from starlette.exceptions import HTTPException
 from starlette.status import HTTP_404_NOT_FOUND, HTTP_500_INTERNAL_SERVER_ERROR
 
@@ -32,6 +33,7 @@ api = FastAPI()
 BRANCH_ID = "bb5942cb28ff48f3420f0c13e9187746"
 PORT = 4444
 BASE_URL = f"http://localhost:{PORT}"
+SYNC_SERVICE_BASE_URL = "http://localhost:4000"
 start_database()
 
 
@@ -43,12 +45,12 @@ start_database()
 @api.on_event("startup")
 def subscribe_sync():
     result = requests.post(
-        "http://localhost:4000/subscribe",
+        f"{SYNC_SERVICE_BASE_URL}/subscribe",
         json={"branch_id": BRANCH_ID, "branch_url": BASE_URL},
     )
     print("Subscription result: ", result.status_code, result.json())
     non_consumed_events = requests.get(
-        f"http://localhost:4000/event/non-consumed/{BRANCH_ID}"
+        f"{SYNC_SERVICE_BASE_URL}/event/non-consumed/{BRANCH_ID}"
     )
 
     non_consumed_events_data = non_consumed_events.json()
@@ -116,7 +118,7 @@ def create_product(
         }
 
         result = requests.post(
-            "http://localhost:4000/event/publish",
+            f"{SYNC_SERVICE_BASE_URL}/event/publish",
             json=event_data,
         )
         print("Publish result: ", result.status_code)
@@ -164,6 +166,80 @@ def select_product_by_id(id: int, db: Connection = Depends(get_db)):
     if product is None:
         raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Product not found.")
     return product
+
+
+@api.post("/place-order")
+def place_order(place_order_data: PlaceOrderIn, db: Connection = Depends(get_db)):
+    cursor = db.cursor()
+
+    updates_to_publish = {}
+
+    try:
+        request_id = cursor.execute(
+            "INSERT INTO request (created_at) VALUES (datetime('now'))"
+        ).lastrowid
+        print(f"request_id: {request_id}")
+
+        for item in place_order_data.items:
+            product = cursor.execute(
+                "SELECT id, current_balance FROM product WHERE id = ?",
+                (item.product_id,),
+            ).fetchone()
+
+            if product is None:
+                raise HTTPException(
+                    status_code=HTTP_404_NOT_FOUND,
+                    detail=f"Product {item.product_id} not found.",
+                )
+
+            current_balance = product[1]
+            status = "NEW"
+
+            product_request_id = cursor.execute(
+                "INSERT INTO product_request (product_id, request_id, quantity, status) VALUES (?, ?, ?, ?)",
+                (item.product_id, request_id, item.quantity, status),
+            ).lastrowid
+            db.commit()
+
+            # Get lock
+            get_lock_response = requests.get(
+                f"{SYNC_SERVICE_BASE_URL}/lock?product_id={item.product_id}"
+            )
+
+            if get_lock_response.status_code != HTTP_404_NOT_FOUND:
+                status = "CANCELLED_BY_LOCK"
+                cursor.execute(
+                    "UPDATE product_request SET status = ? WHERE id = ? ",
+                    (status, product_request_id),
+                )
+                db.commit()
+                print(f"Product {item.product_id} locked. {get_lock_response.json()}")
+                continue
+
+            # Lock product
+            lock_product_response = requests.post(
+                f"{SYNC_SERVICE_BASE_URL}/lock",
+                json={"branch": BRANCH_ID, "product_id": item.product_id},
+            )
+            print(
+                "lock_product_response: ",
+                lock_product_response.status_code,
+                lock_product_response.json(),
+            )
+
+            if item.quantity > current_balance:
+                status = "INSUFFICIENT_BALANCE"
+            else:
+                status = "IN_PROGRESS"
+
+            cursor.execute(
+                "UPDATE product_request SET status = ? WHERE id = ? ",
+                (status, product_request_id),
+            )
+            db.commit()
+
+    except HTTPException:
+        raise
 
 
 uvicorn.run(api, host="0.0.0.0", port=PORT)
