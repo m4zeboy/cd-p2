@@ -11,8 +11,13 @@
 # [x] Replicate
 # [x] Fail tolerance
 # [x] Get Product
-# [ ] Place order
-#   [ ] Concurrency
+# [x] Place order
+#   [x] Concurrency
+#   [x] Process order
+#   [x] update product
+#   [x] confirm
+#   [ ] unlock
+#   [ ] publish update event to other branches
 #   [ ] Replicate to update event
 # [ ] Get Order
 # [ ] Authentication
@@ -237,6 +242,24 @@ def place_order(place_order_data: PlaceOrderIn, db: Connection = Depends(get_db)
                 (status, product_request_id),
             )
             db.commit()
+
+            # Process order -> update product -> confirm -> unlock -> publish update event to other branches
+            new_balance = current_balance - item.quantity
+            cursor.execute(
+                "UPDATE product SET current_balance = ? WHERE id = ?",
+                (new_balance, item.product_id),
+            )
+            db.commit()
+            print(f"Product {item.product_id}, new_balance: {new_balance}")
+            cursor.execute(
+                "UPDATE product_request SET status = ? WHERE id = ? ",
+                ("CONFIRMED", product_request_id),
+            )
+            db.commit()
+
+            updates_to_publish[item.product_id] = -item.quantity
+
+            print(f"updates to publish: {len(updates_to_publish)}")
 
     except HTTPException:
         raise
