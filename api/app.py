@@ -16,9 +16,9 @@
 #   [x] Process order
 #   [x] update product
 #   [x] confirm
+#   [x] publish update event to other branches
+#   [x] Replicate to update event
 #   [x] unlock
-#   [ ] publish update event to other branches
-#   [ ] Replicate to update event
 # [ ] Get Order
 # [ ] Authentication
 #
@@ -28,7 +28,7 @@ from sqlite3 import Connection, IntegrityError
 import requests
 import uvicorn
 from database import get_db, start_database
-from event_handler import consume_create
+from event_handler import consume_create, consume_update, publish_event
 from fastapi import Depends, FastAPI
 from models import NotifyIn, PlaceOrderIn, ProductIn
 from starlette.exceptions import HTTPException
@@ -113,18 +113,14 @@ def create_product(
 
         db.commit()
 
-        event_data = {
-            "branch_id": BRANCH_ID,
-            "operation": "CREATE",
-            "sub": product_data.id,
-            "initial_balance": product_data.initial_balance,
-            "current_balance": 0,
-            "delta": 0,
-        }
-
-        result = requests.post(
-            f"{SYNC_SERVICE_BASE_URL}/event/publish",
-            json=event_data,
+        result = publish_event(
+            BRANCH_ID=BRANCH_ID,
+            SYNC_SERVICE_BASE_URL=SYNC_SERVICE_BASE_URL,
+            operation="CREATE",
+            sub=product_data.id,
+            initial_balance=product_data.initial_balance,
+            current_balance=0,
+            delta=0,
         )
         print("Publish result: ", result.status_code)
 
@@ -153,6 +149,10 @@ def notify(notify_data: NotifyIn, db: Connection = Depends(get_db)):
             consume_create(
                 db=db, cursor=cursor, notify_data=notify_data, BRANCH_ID=BRANCH_ID
             )
+        elif notify_data.operation == "UPDATE":
+            consume_update(
+                db=db, cursor=cursor, notify_data=notify_data, BRANCH_ID=BRANCH_ID
+            )
     except HTTPException:
         raise
     except Exception as e:
@@ -173,6 +173,10 @@ def select_product_by_id(id: int, db: Connection = Depends(get_db)):
     return product
 
 
+# ===================================================
+# Place order with various items:
+# 1. When an event occur, the sync service will call this route
+# ===================================================
 @api.post("/place-order")
 def place_order(place_order_data: PlaceOrderIn, db: Connection = Depends(get_db)):
     cursor = db.cursor()
@@ -259,7 +263,7 @@ def place_order(place_order_data: PlaceOrderIn, db: Connection = Depends(get_db)
             )
             db.commit()
 
-            # Process order -> update product -> confirm -> unlock -> publish update event to other branches
+            # Process order -> update product -> confirm -> publish update event to other branches -> unlock
             new_balance = current_balance - item.quantity
             cursor.execute(
                 "UPDATE product SET current_balance = ? WHERE id = ?",
@@ -276,6 +280,23 @@ def place_order(place_order_data: PlaceOrderIn, db: Connection = Depends(get_db)
             updates_to_publish[item.product_id] = -item.quantity
 
             print(f"updates to publish: {len(updates_to_publish)}")
+
+            for product_id, delta in updates_to_publish.items():
+                print(f"Publish: UPDATE product {product_id}, delta: {delta}")
+                publish_result = publish_event(
+                    BRANCH_ID=BRANCH_ID,
+                    SYNC_SERVICE_BASE_URL=SYNC_SERVICE_BASE_URL,
+                    operation="UPDATE",
+                    sub=product_id,
+                    initial_balance=0,
+                    current_balance=0,
+                    delta=delta,
+                )
+                print(
+                    "Publish result: ",
+                    publish_result.status_code,
+                    publish_result.json(),
+                )
 
             unlock_response = requests.patch(
                 f"{SYNC_SERVICE_BASE_URL}/lock/{lock_product_response_data['lock_id']}/release"
