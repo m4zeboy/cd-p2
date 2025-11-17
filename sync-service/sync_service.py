@@ -162,8 +162,8 @@ def consume_event(id: int, db: Connection = Depends(get_db)):
 def get_events_not_consumed(branch_id, db: Connection = Depends(get_db)):
     cursor = db.cursor()
     result = cursor.execute(
-        "SELECT * FROM event WHERE subscriber_id = ? AND consumed_at IS NULL",
-        (branch_id,),
+        "SELECT * FROM event WHERE subscriber_id = ? AND publisher_id != ? AND consumed_at IS NULL",
+        (branch_id, branch_id),
     ).fetchall()
     return result
 

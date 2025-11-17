@@ -307,12 +307,33 @@ def place_order(place_order_data: PlaceOrderIn, db: Connection = Depends(get_db)
             )
 
         return {
+            "request_id": request_id,
             "message": "Request created. Check the items' statuses",
             "confirmed_items": len(updates_to_publish),
         }
 
     except HTTPException:
         raise
+
+
+@api.get("/order/{id}")
+def get_order_details(id: int, db: Connection = Depends(get_db)):
+    cursor = db.cursor()
+
+    request = cursor.execute("SELECT * FROM request WHERE id = ?", (id,)).fetchone()
+
+    if request is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Request not found")
+
+    product_requests = cursor.execute(
+        "SELECT * FROM product_request WHERE request_id = ?", (id,)
+    ).fetchall()
+
+    return {
+        "request_id": request[0],
+        "request_created_at": request[1],
+        "items": product_requests,
+    }
 
 
 uvicorn.run(api, host="0.0.0.0", port=PORT)
