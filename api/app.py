@@ -19,7 +19,7 @@
 #   [x] publish update event to other branches
 #   [x] Replicate to update event
 #   [x] unlock
-# [ ] Get Order
+# [x] Get Order
 # [ ] Authentication
 #
 import sqlite3
