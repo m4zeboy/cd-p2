@@ -168,7 +168,7 @@ def get_events_not_consumed(branch_id, db: Connection = Depends(get_db)):
     return result
 
 
-@api.get("/lock")
+@api.get("/lock/{id}")
 def get_product_lock(product_id: int = 0, db: Connection = Depends(get_db)):
     cursor = db.cursor()
     lock = cursor.execute(

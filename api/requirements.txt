@@ -1,0 +1,27 @@
+# ===================================================
+# Autor: Moisés Silva de Azevedo
+#
+# Universidade Federal do Mato Grosso do Sul,
+# Câmpus de Três Lagoas (UFMS/CPTL),
+# Sistemas de Informaçao,
+# Computaçao Distribuída,
+# Novembro de 2025
+# ===================================================
+
+# Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# HTTP Requests
+requests==2.31.0
+
+# Database
+sqlite3
+
+# JWT Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+
+# Data Validation
+pydantic==2.5.0

@@ -34,3 +34,17 @@ class OrderItem(BaseModel):
 
 class PlaceOrderIn(BaseModel):
     items: List[OrderItem]
+
+
+class ProductUpdateIn(BaseModel):
+    current_balance: int
+
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str

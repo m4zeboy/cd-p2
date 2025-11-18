@@ -20,18 +20,25 @@
 #   [x] Replicate to update event
 #   [x] unlock
 # [x] Get Order
-# [ ] Authentication
+# [x] update product
+# [x] Authentication
 #
 import sqlite3
+from datetime import timedelta
 from sqlite3 import Connection, IntegrityError
 
 import requests
 import uvicorn
+from auth import (
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    authenticate_user,
+    create_access_token,
+    get_current_user,
+)
 from database import get_db, start_database
 from event_handler import consume_create, consume_update, publish_event
-from fastapi import Depends, FastAPI
-from models import NotifyIn, PlaceOrderIn, ProductIn
-from starlette.exceptions import HTTPException
+from fastapi import Depends, FastAPI, HTTPException, status
+from models import LoginIn, NotifyIn, PlaceOrderIn, ProductIn, ProductUpdateIn, Token
 from starlette.status import HTTP_404_NOT_FOUND, HTTP_500_INTERNAL_SERVER_ERROR
 
 api = FastAPI()
@@ -93,6 +100,26 @@ def subscribe_sync():
 
 
 # ===================================================
+# Login route - no authentication required
+# Returns JWT token for subsequent requests
+# ===================================================
+@api.post("/login", response_model=Token)
+def login(login_data: LoginIn):
+    if not authenticate_user(login_data.username, login_data.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": login_data.username}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+# ===================================================
 # Create product:
 # 1. Create product locally
 # 2. Publish event: operation=CREATE
@@ -102,6 +129,7 @@ def subscribe_sync():
 def create_product(
     product_data: ProductIn,
     db: Connection = Depends(get_db),
+    current_user: str = Depends(get_current_user),
 ):
     try:
         cursor = db.cursor()
@@ -163,7 +191,11 @@ def notify(notify_data: NotifyIn, db: Connection = Depends(get_db)):
 
 
 @api.get("/product/{id}")
-def select_product_by_id(id: int, db: Connection = Depends(get_db)):
+def select_product_by_id(
+    id: int,
+    db: Connection = Depends(get_db),
+    current_user: str = Depends(get_current_user),
+):
     cursor = db.cursor()
 
     product = cursor.execute("SELECT * FROM product WHERE id = ?", (id,)).fetchone()
@@ -174,11 +206,119 @@ def select_product_by_id(id: int, db: Connection = Depends(get_db)):
 
 
 # ===================================================
+# Update product:
+# 1. Lock the product to prevent concurrent updates
+# 2. Update product balance locally
+# 3. Publish UPDATE event to sync with other branches
+# 4. Release the lock
+# ===================================================
+@api.patch("/product/{id}")
+def update_product(
+    id: int,
+    product_update: ProductUpdateIn,
+    db: Connection = Depends(get_db),
+    current_user: str = Depends(get_current_user),
+):
+    cursor = db.cursor()
+
+    # Check if product exists
+    product = cursor.execute(
+        "SELECT id, current_balance FROM product WHERE id = ?", (id,)
+    ).fetchone()
+
+    if product is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail="Product not found.")
+
+    current_balance = product[1]
+
+    try:
+        # Get lock to prevent concurrent updates
+        get_lock_response = requests.get(
+            f"{SYNC_SERVICE_BASE_URL}/lock?product_id={id}"
+        )
+
+        if get_lock_response.status_code != HTTP_404_NOT_FOUND:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Product {id} is currently locked by another operation",
+            )
+
+        # Lock product
+        lock_product_response = requests.post(
+            f"{SYNC_SERVICE_BASE_URL}/lock",
+            json={"branch": BRANCH_ID, "product_id": id},
+        )
+
+        if lock_product_response.status_code != 200:
+            raise HTTPException(
+                status_code=HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to acquire lock for product update",
+            )
+
+        lock_product_response_data = lock_product_response.json()
+        lock_id = lock_product_response_data["lock_id"]
+
+        try:
+            # Update product balance
+            cursor.execute(
+                "UPDATE product SET current_balance = ? WHERE id = ?",
+                (product_update.current_balance, id),
+            )
+            db.commit()
+
+            # Calculate delta for event publishing
+            delta = product_update.current_balance - current_balance
+
+            # Publish UPDATE event to sync with other branches
+            publish_result = publish_event(
+                BRANCH_ID=BRANCH_ID,
+                SYNC_SERVICE_BASE_URL=SYNC_SERVICE_BASE_URL,
+                operation="UPDATE",
+                sub=id,
+                initial_balance=0,
+                current_balance=product_update.current_balance,
+                delta=delta,
+            )
+
+            print(
+                f"Update published for product {id}: {publish_result.status_code}, {publish_result.json()}"
+            )
+
+            return {
+                "message": f"Product {id} updated successfully",
+                "previous_balance": current_balance,
+                "new_balance": product_update.current_balance,
+                "delta": delta,
+            }
+
+        finally:
+            # Always release the lock
+            unlock_response = requests.patch(
+                f"{SYNC_SERVICE_BASE_URL}/lock/{lock_id}/release"
+            )
+            print(
+                f"Lock released for product {id}: {unlock_response.status_code}, {unlock_response.json()}"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update product: {str(e)}",
+        )
+
+
+# ===================================================
 # Place order with various items:
 # 1. When an event occur, the sync service will call this route
 # ===================================================
 @api.post("/place-order")
-def place_order(place_order_data: PlaceOrderIn, db: Connection = Depends(get_db)):
+def place_order(
+    place_order_data: PlaceOrderIn,
+    db: Connection = Depends(get_db),
+    current_user: str = Depends(get_current_user),
+):
     cursor = db.cursor()
 
     updates_to_publish = {}
@@ -317,7 +457,11 @@ def place_order(place_order_data: PlaceOrderIn, db: Connection = Depends(get_db)
 
 
 @api.get("/order/{id}")
-def get_order_details(id: int, db: Connection = Depends(get_db)):
+def get_order_details(
+    id: int,
+    db: Connection = Depends(get_db),
+    current_user: str = Depends(get_current_user),
+):
     cursor = db.cursor()
 
     request = cursor.execute("SELECT * FROM request WHERE id = ?", (id,)).fetchone()
